@@ -27,7 +27,7 @@ executable demo-exe
                      , distributed-process
                      , network-transport-tcp
                      , demo
-  other-modules:     Set_replication_core
+  other-modules:     SetReplicationCore
   default-language:    Haskell2010
 
 test-suite demo-test

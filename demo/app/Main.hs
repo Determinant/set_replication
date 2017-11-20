@@ -5,7 +5,7 @@ import Control.Distributed.Process
 import Control.Distributed.Process.Node
 
 import Lib
-import Set_replication_core
+import SetReplicationCore
 
 convert_list :: List a -> [a]
 convert_list Nil = []

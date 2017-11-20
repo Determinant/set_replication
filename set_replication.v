@@ -5,7 +5,7 @@ Require Import Sumbool.
 Require Import Relations.
 
 Module model.
-(* simple etwork semantics from Verdi *)
+(* simple network semantics from Verdi *)
 Set Implicit Arguments.
 Section Verdi.
   Variable node : Type.
@@ -44,7 +44,6 @@ Section Verdi.
   Definition record_outputs (n : node) (outs : list output) : list externalEvent :=
     map (fun o => (n, inr o)) outs.
 
-(*begin code*)
   Inductive reliable_step : world -> world -> Prop :=
   | step_input :
       forall w i n st' ms outs,
@@ -413,7 +412,7 @@ Proof.
   break_if.
   + inversion e; subst.
     destruct dest; remember (model.payload {| model.dest := primary;
-                                                         model.payload := ack |}); destruct m; simpl;
+                                              model.payload := ack |}); destruct m; simpl;
     apply (eqset_refl (new_elems l)).
   + destruct dest; destruct payload; simpl;
     try apply eqset_add; try apply IHl.
@@ -428,7 +427,7 @@ Proof.
   break_if.
   - inversion e; subst.
     remember (model.dest {| model.dest := primary;
-                                       model.payload := payload |}).
+                            model.payload := payload |}).
     destruct n. 
     apply eqset_refl.
     destruct payload.
@@ -508,4 +507,4 @@ Qed.
 
 Require Extraction.
 Extraction Language Haskell.
-Extraction "set_replication_core.hs" processMsg processInput.
+Extraction "SetReplicationCore.hs" processMsg processInput.
