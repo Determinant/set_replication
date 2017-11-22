@@ -90,18 +90,6 @@ build_node :: Node -> SR.Node
 build_node P = SR.Primary
 build_node B = SR.Backup
 
-replyBack :: (ProcessId, String) -> Process ()
-replyBack (sender, msg) = do send sender msg
-                             say $ "handling " ++ msg
-
-logMessage :: String -> Process ()
-logMessage msg = say $ "handling " ++ msg
-
-printResult :: SR.Prod (SR.Prod SR.State (SR.List SR.Packet0)) (SR.List SR.Output) -> IO ()
-printResult (SR.Pair (SR.Pair s msgs) outs) =
-    printf "s%s msgs%s outs%s\n" (show $ convert_state s) (show $ convert_packets msgs)
-                               (show $ convert_outputs outs)
-
 backups_rawaddr = [("127.0.0.1", "2001")]
 primary_rawaddr = ("127.0.0.1", "2000")
 input_rawaddr = ("127.0.0.1", "2002")
@@ -114,47 +102,31 @@ input_addr = NodeId (EndPointAddress (pack $ to_nid input_rawaddr))
 
 pname = "default"
 
-inputHandler :: Node -> MVar State -> In -> Process [(Node, Msg)]
-inputHandler node state input = liftIO $ do
+handlerWrapper :: (Show a) => Node -> MVar State ->
+                                (SR.Node -> b -> SR.Handler) -> (a -> b) ->
+                                a -> Process [(Node, Msg)]
+handlerWrapper node state handler builder feed = liftIO $ do
     s <- takeMVar state
-    let SR.Pair (SR.Pair s' msgs') outs' = SR.processInput (build_node node) (build_input input) (build_state s)
+    let SR.Pair (SR.Pair s' msgs') outs' = handler (build_node node) (builder feed) (build_state s)
     let ss' = convert_state s'
     putMVar state ss'
-    s <- takeMVar state
-    putMVar state ss'
-    printf "got input: %s\n" $ show input
+    printf "got: %s\n" $ show feed
     printf "output: %s\n" $ show (convert_outputs outs')
     printf "new state: %s\n" $ show ss'
     return $ convert_packets msgs'
 
-msgHandler :: Node -> MVar State -> Msg -> Process [(Node, Msg)]
-msgHandler node state msg = liftIO $ do
-    s <- takeMVar state
-    let SR.Pair (SR.Pair s' msgs') outs' = SR.processMsg (build_node node) (build_msg msg) (build_state s)
-    let ss' = convert_state s'
-    putMVar state ss'
-    printf "got msg: %s\n" $ show msg
-    printf "output: %s\n" $ show (convert_outputs outs')
-    printf "new state: %s\n" $ show ss'
-    return $ convert_packets msgs'
-
-state_trans :: Node -> MVar State -> Process ()
-state_trans node state = do
-    outgoing <- receiveWait [match $ inputHandler node state,
-                             match $ msgHandler node state]
+step :: Node -> MVar State -> Process ()
+step node state = do
+    outgoing <- receiveWait [match $ handlerWrapper node state SR.processInput build_input,
+                             match $ handlerWrapper node state SR.processMsg build_msg]
     forM_ outgoing $ \packet -> do
         let (node, msg) = packet
         case node of
             P -> nsendRemote primary_addr pname msg
             B -> mapM_ (\b -> do nsendRemote b pname msg) backups_addr
 
-primary_loop state = do
-    state_trans P state
-    primary_loop state
-
-backup_loop state = do
-    state_trans B state
-    backup_loop state
+primary_loop state = do step P state; primary_loop state
+backup_loop state = do step B state; backup_loop state
 
 
 input_loop (x:xs) = do
