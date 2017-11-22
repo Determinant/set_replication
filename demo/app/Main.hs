@@ -1,24 +1,28 @@
 {-# LANGUAGE DeriveGeneric #-}
 module Main where
 
-import System.Environment (getArgs)
-import Network.Transport.TCP (createTransport, defaultTCPParameters)
-import Network.Transport (EndPointAddress(..))
-import Control.Distributed.Process
-import Control.Distributed.Process.Node (initRemoteTable, runProcess, localNodeId, newLocalNode)
---import Control.Distributed.Process.Backend.SimpleLocalnet
-import Control.Distributed.Process.Extras.Timer
-import Control.Distributed.Process.Extras.Time
-import Control.Concurrent (threadDelay)
-import Control.Monad (forever, filterM, forM_)
-
 import Data.Binary
 import Data.Typeable
 import Data.ByteString.Char8 (pack)
 import Text.Printf
+import System.Random
+import Control.Concurrent.MVar
 import GHC.Generics (Generic)
+
+import System.Environment (getArgs)
+import Network.Transport.TCP (createTransport, defaultTCPParameters)
+import Network.Transport (EndPointAddress(..))
+import Control.Distributed.Process
+import Control.Distributed.Process.Node (initRemoteTable, runProcess, newLocalNode)
+import Control.Distributed.Process.Extras.Timer
+import Control.Distributed.Process.Extras.Time
+import Control.Concurrent (threadDelay)
+import Control.Monad (forM_)
+
+-- import the generated code by Coq
 import qualified SetReplicationCore as SR
 
+type State = [Int]
 
 convert_list :: SR.List a -> [a]
 convert_list SR.Nil = []
@@ -28,12 +32,12 @@ convert_nat :: SR.Nat -> Int
 convert_nat SR.O = 0
 convert_nat (SR.S x) = 1 + convert_nat x
 
-convert_state :: SR.State -> [Int]
+convert_state :: SR.State -> State
 convert_state s = map convert_nat $ convert_list s
 
 data Msg = MsgAdd Int | MsgAck deriving (Typeable, Generic, Show)
 data In = ReqAdd Int | ReqRead deriving (Typeable, Generic, Show)
-data Out = AddResp | ReadResp [Int] deriving Show
+data Out = AddResp | ReadResp State deriving Show
 data Node = P | B deriving Show
 
 instance Binary Msg
@@ -64,14 +68,27 @@ convert_output (SR.Read_response s) = ReadResp (convert_state s)
 convert_outputs :: SR.List SR.Output -> [Out]
 convert_outputs l = map convert_output $ convert_list l
 
+build_input :: In -> SR.Input
+build_input (ReqAdd x) = SR.Request_add (build_nat x)
+build_input ReqRead = SR.Request_read
+
+build_msg :: Msg -> SR.Msg
+build_msg MsgAck = SR.Ack
+build_msg (MsgAdd x) = SR.Add $ build_nat x
+
+
 build_nat :: Int -> SR.Nat
 build_nat x
     | x == 0 = SR.O
     | otherwise = SR.S (build_nat (x - 1))
 
-build_state :: [Int] -> SR.State
+build_state :: State -> SR.State
 build_state [] = SR.Nil
 build_state (x:xs) = SR.Cons (build_nat x) $ build_state xs
+
+build_node :: Node -> SR.Node
+build_node P = SR.Primary
+build_node B = SR.Backup
 
 replyBack :: (ProcessId, String) -> Process ()
 replyBack (sender, msg) = do send sender msg
@@ -85,45 +102,78 @@ printResult (SR.Pair (SR.Pair s msgs) outs) =
     printf "s%s msgs%s outs%s\n" (show $ convert_state s) (show $ convert_packets msgs)
                                (show $ convert_outputs outs)
 
-backups = map (\addr -> NodeId (EndPointAddress (pack addr))) ["127.0.0.1:2001:0"]
-primary = NodeId (EndPointAddress (pack "127.0.0.1:2000:0"))
+backups_rawaddr = [("127.0.0.1", "2001")]
+primary_rawaddr = ("127.0.0.1", "2000")
+input_rawaddr = ("127.0.0.1", "2002")
 
-inputHandler :: In -> Process ()
-inputHandler input = liftIO . putStrLn $ "got input: " ++ (show input)
+to_nid (host, port) = host ++ ":" ++ port ++ ":0"
 
-msgHandler :: Msg -> Process ()
-msgHandler msg = liftIO . putStrLn $ "got msg" ++ (show msg)
+backups_addr = map (\addr -> NodeId (EndPointAddress (pack $ to_nid addr))) backups_rawaddr
+primary_addr = NodeId (EndPointAddress (pack $ to_nid primary_rawaddr))
+input_addr = NodeId (EndPointAddress (pack $ to_nid input_rawaddr))
 
-master_loop = do
-    mapM_ (\p -> do nsendRemote p "backup" "msg from p") backups
-    receiveWait [match inputHandler, match msgHandler]
-    master_loop
+pname = "default"
 
-backup_loop = do
-    --nsendRemote primary "primary" "msg from b"
-    msg <- expect :: Process String
-    liftIO . putStrLn $ "got " ++ msg
-    backup_loop
+inputHandler :: Node -> MVar State -> In -> Process [(Node, Msg)]
+inputHandler node state input = liftIO $ do
+    s <- takeMVar state
+    let SR.Pair (SR.Pair s' msgs') outs' = SR.processInput (build_node node) (build_input input) (build_state s)
+    let ss' = convert_state s'
+    putMVar state ss'
+    s <- takeMVar state
+    putMVar state ss'
+    printf "got input: %s\n" $ show input
+    printf "output: %s\n" $ show (convert_outputs outs')
+    printf "new state: %s\n" $ show ss'
+    return $ convert_packets msgs'
+
+msgHandler :: Node -> MVar State -> Msg -> Process [(Node, Msg)]
+msgHandler node state msg = liftIO $ do
+    s <- takeMVar state
+    let SR.Pair (SR.Pair s' msgs') outs' = SR.processMsg (build_node node) (build_msg msg) (build_state s)
+    let ss' = convert_state s'
+    putMVar state ss'
+    printf "got msg: %s\n" $ show msg
+    printf "output: %s\n" $ show (convert_outputs outs')
+    printf "new state: %s\n" $ show ss'
+    return $ convert_packets msgs'
+
+state_trans :: Node -> MVar State -> Process ()
+state_trans node state = do
+    outgoing <- receiveWait [match $ inputHandler node state,
+                             match $ msgHandler node state]
+    forM_ outgoing $ \packet -> do
+        let (node, msg) = packet
+        case node of
+            P -> nsendRemote primary_addr pname msg
+            B -> mapM_ (\b -> do nsendRemote b pname msg) backups_addr
+
+primary_loop state = do
+    state_trans P state
+    primary_loop state
+
+backup_loop state = do
+    state_trans B state
+    backup_loop state
 
 
-input = do
-    nsendRemote primary "primary" (ReqAdd 0)
+input_loop (x:xs) = do
+    nsendRemote primary_addr pname (ReqAdd (x `mod` 100))
     liftIO . threadDelay $ 1000000
-    input
+    input_loop xs
 
 main :: IO ()
-main = do [id, host, port] <- getArgs
-          printf "%s %s %s\n" id host port
-          let SR.Pair (SR.Pair s msgs) outs = SR.processInput SR.Primary (SR.Request_add $ build_nat 4) (build_state [1, 3, 5])
-          let SR.Pair (SR.Pair s' msgs') outs' = SR.processInput SR.Primary (SR.Request_add $ build_nat 6) s
-          putStrLn $ "s" ++ (show $ convert_state s') ++ " msgs" ++ (show $ convert_packets msgs') ++ " outs" ++ (show $ convert_outputs outs')
-          printResult $ SR.processMsg SR.Primary SR.Ack s'
+main = do [id, num] <- getArgs
+          printf "%s %s\n" id num
+          state <- newMVar $ []
+          rng <- newStdGen
+          let ((host, port), main_loop) = case id of
+                "primary" -> (primary_rawaddr, primary_loop state)
+                "backup" -> (backups_rawaddr !! read num, backup_loop state)
+                "input" -> (input_rawaddr, input_loop (randoms rng :: [Int]))
           Right t <- createTransport host port defaultTCPParameters
           node <- newLocalNode t initRemoteTable
           runProcess node $ do
             pid <- getSelfPid
-            register id pid
-            case id of
-                "primary" -> master_loop
-                "backup" -> backup_loop
-                "input" -> input
+            register pname pid
+            main_loop
