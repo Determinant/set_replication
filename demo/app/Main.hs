@@ -109,11 +109,13 @@ handlerWrapper node state handler builder feed = liftIO $ do
     s <- takeMVar state
     let SR.Pair (SR.Pair s' msgs') outs' = handler (build_node node) (builder feed) (build_state s)
     let ss' = convert_state s'
+    let nmsgs = convert_packets msgs'
     putMVar state ss'
     printf "got: %s\n" $ show feed
-    printf "output: %s\n" $ show (convert_outputs outs')
     printf "new state: %s\n" $ show ss'
-    return $ convert_packets msgs'
+    printf "send: %s\n" $ show nmsgs
+    printf "output: %s\n" $ show (convert_outputs outs')
+    return nmsgs
 
 step :: Node -> MVar State -> Process ()
 step node state = do

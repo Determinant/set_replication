@@ -5,7 +5,7 @@ Require Import Sumbool.
 Require Import Relations.
 
 Module model.
-(* simple network semantics from Verdi *)
+(* simple network semantics from Verdi blog post *)
 Set Implicit Arguments.
 Section Verdi.
   Variable node : Type.
@@ -69,6 +69,7 @@ Section Verdi.
 End Verdi.
 End model.
 
+(* set replication protocol definition *)
 Inductive node := primary | backup.
 Inductive msg := add: nat -> msg | ack.
 Definition state := list nat.
@@ -78,12 +79,17 @@ Inductive output := add_response | read_response: state -> output.
 Definition initState (_ : node) : state := [].
 Definition packet := (model.packet node msg).
 
+(* monadic handler type for event handlers *)
 Definition handler_monad A :=
   state -> A * state * list packet * list output.
+(* this handler is isomorphic to handler_monad unit, only used to yield final
+ * handler along with `do` *)
 Definition handler :=
   state -> state * list packet * list output.
 Definition do {A : Type} (m : handler_monad A) : handler :=
   fun s => let '(a, s', ps, os) := m s in (s', ps, os).
+
+(* monad definition *)
 Definition ret {A : Type} (x : A) : handler_monad A :=
   fun s => (x, s, [], []).
 Definition bind {A B : Type} (ma : handler_monad A)
@@ -92,6 +98,7 @@ Definition bind {A B : Type} (ma : handler_monad A)
         let '(b, s'', ps', os') := f a s' in
         (b, s'', ps ++ ps', os ++ os').
 
+(* monad notation *)
 Notation "x <- c1 ;; c2" :=
   (@bind _ _ c1 (fun x => c2))
     (at level 100, c1 at next level, right associativity).
@@ -100,17 +107,24 @@ Notation "e1 ;; e2" :=
   (_ <- e1 ;; e2)
     (at level 100, right associativity).
 
+(* some basic operations *)
+(* no-op *)
 Definition nop :=
   ret tt.
+(* send a message to a node *)
 Definition send to msg : handler_monad unit :=
   fun s => (tt, s, [model.Build_packet to msg], []).
+(* produce an output to the output list *)
 Definition out o : handler_monad unit :=
   fun s => (tt, s, [], [o]).
+(* obtain the state *)
 Definition get : handler_monad state :=
   fun s => (s, s, [], []).
+(* set a new state *)
 Definition set s : handler_monad unit :=
   fun _ => (tt, s, [], []).
 
+(* the protocol logic *)
 Definition do_add (h : nat): handler_monad unit :=
   x <- get ;; set (h::x).
 Definition do_read: handler_monad unit :=
@@ -120,7 +134,8 @@ Definition processInput (h : node) (i : input) : handler :=
   do
     match h with
     | primary => match i with
-                | request_add h => do_add h;; send backup (add h)
+                | request_add h => do_add h ;;
+                                   send backup (add h)
                 | request_read => do_read
                 end
     | backup => match i with
@@ -133,15 +148,17 @@ Definition processMsg (h : node) (m : msg) : handler :=
   do
     match h with
     | backup => match m with
-               | add h => do_add h;; send primary ack
+               | add h => do_add h ;;
+                          send primary ack
                | _ => nop
                end
-
     | primary => match m with
                 | ack => out add_response
                 | _ => nop
                 end
     end.
+
+(* proofs begin *)
 
 Definition data_eq_dec: forall x y : nat, {x = y} + {x <> y}.
 Proof. decide equality. Defined.
@@ -154,6 +171,7 @@ Proof. decide equality. apply data_eq_dec. Defined.
 Definition msg_eqb (x y : msg) : bool :=
   if msg_eq_dec x y then true else false.
 
+(* some aliases *)
 Notation reliable_step :=
   (model.reliable_step processMsg processInput msg_eq_dec node_eq_dec).
 Notation world :=
@@ -168,24 +186,10 @@ Notation remove_one :=
   (@model.remove_one node msg msg_eq_dec node_eq_dec).
 Notation initWorld := (model.initWorld msg input output initState).
 
-
-(* begin proofs *)
-
-(* utility lemmas about the properties of sets represented by lists with possibly duplicate values *)
+(* utility lemmas about the properties of sets represented by lists with
+ * possibly duplicate values *)
 Definition subset (l1 l2: list nat) : Prop := forall (x: nat), In x l1 -> In x l2.
 Definition eqset (l1 l2: list nat) : Prop := (subset l1 l2) /\ (subset l2 l1).
-
-Fixpoint new_elems (l : list packet) : list nat :=
-  match l with
-  | nil => nil
-  | p :: t => match (model.dest p) with
-              | backup => match (model.payload p) with
-                          | add h => h :: (new_elems t)
-                          | _ => new_elems t
-                          end
-              | _ => new_elems t
-              end
-  end.
 
 Lemma eqset_comm: forall l1 l2, eqset l1 l2 <-> eqset l2 l1.
 Proof.
@@ -330,6 +334,19 @@ Proof.
   apply subset_rswap; auto.
 Qed.
 
+(* a helper function that collects the updates in-flight to the backup *)
+Fixpoint new_elems (l : list packet) : list nat :=
+  match l with
+  | nil => nil
+  | p :: t => match (model.dest p) with
+              | backup => match (model.payload p) with
+                          | add h => h :: (new_elems t)
+                          | _ => new_elems t
+                          end
+              | _ => new_elems t
+              end
+  end.
+
 Lemma new_elems_cons_backup_add :
   forall l h,
    eqset (new_elems (model.Build_packet backup (add h) :: l)) (h :: (new_elems l)).
@@ -348,16 +365,6 @@ Proof.
   unfold eqset.
   unfold subset in *.
   split; unfold new_elems; simpl; apply subset_refl.
-Qed.
-
-Lemma new_elems_cons_ack :
-  forall l h,
-    eqset (new_elems (model.Build_packet h ack :: l)) (new_elems l).
-Proof.
-  intros.
-  unfold eqset.
-  unfold subset in *.
-  split; unfold new_elems; simpl; destruct h; apply subset_refl.
 Qed.
 
 Ltac break_if :=
@@ -437,6 +444,7 @@ Proof.
     try apply eqset_add; try apply IHl.
 Qed.
 
+(* lemmas used for eliminating update functions in the final proof *)
 Lemma update_same : forall f x v, update f x v x = v.
 Proof.
   intros. unfold update. break_if; congruence.
@@ -447,13 +455,18 @@ Proof.
   intros. unfold update. break_if; congruence.
 Qed.
 
+(* a predicate that the primary set is exactly the union of the backup set and
+ * the set induced from in-flight updates to the backup *)
 Definition backup_union_new_elems_eq_primary (w : world) : Prop :=
   eqset ((new_elems (model.inFlightMsgs w)) ++ model.localState w backup)
         (model.localState w primary).
 
+(* a weaker predicate that the backup set is a subset of the primary set *)
 Definition backup_subset_primary (w : world) : Prop :=
   subset (model.localState w backup) (model.localState w primary).
 
+(* the union-equality lemma is stronger than the subset property, but make it
+ * possible to do induction because it takes the in-flight messsages into consideration. *)
 Lemma backup_union_new_elems_eq_primary_true :
   forall w, reachable w ->
        backup_union_new_elems_eq_primary w.
@@ -491,7 +504,7 @@ Proof.
         rewrite eqset_comm in p; auto.
 Qed.
 
-
+(* the safety property: in any reachable world, the subset claim holds *)
 Theorem backup_subset_primary_true :
   forall w,
     reachable w ->
@@ -505,6 +518,7 @@ Proof.
   apply (subset_part (new_elems (model.inFlightMsgs w))); auto.
 Qed.
 
+(* generated Haskell code *)
 Require Extraction.
 Extraction Language Haskell.
 Extraction "SetReplicationCore.hs" processMsg processInput.
