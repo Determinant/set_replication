@@ -98,7 +98,7 @@ Definition bind {A B : Type} (ma : handler_monad A)
         let '(b, s'', ps', os') := f a s' in
         (b, s'', ps ++ ps', os ++ os').
 
-(* monad notation *)
+(* Haskell-style monad notation *)
 Notation "x <- c1 ;; c2" :=
   (@bind _ _ c1 (fun x => c2))
     (at level 100, c1 at next level, right associativity).
