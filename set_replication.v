@@ -272,7 +272,7 @@ Proof.
   unfold subset in H; simpl in H; unfold subset.
   intros. apply (H x (or_intror H0)).
 Qed.
-  
+
 Lemma subset_part: forall l1 l2 l3, subset (l1 ++ l2) l3 -> subset l2 l3.
 Proof.
   intros.
@@ -419,7 +419,7 @@ Proof.
   break_if.
   + inversion e; subst.
     destruct dest; remember (model.payload {| model.dest := primary;
-                                              model.payload := ack |}); destruct m; simpl;
+                                              model.payload := ack |}) as p; destruct p; simpl;
     apply (eqset_refl (new_elems l)).
   + destruct dest; destruct payload; simpl;
     try apply eqset_add; try apply IHl.
@@ -428,17 +428,17 @@ Qed.
 Lemma new_elems_remove_primary :
   forall l m,
     eqset (new_elems (remove_one (model.Build_packet primary m) l)) (new_elems l).
-Proof. 
+Proof.
   induction l; simpl; intuition.
   unfold eqset; split; apply subset_refl.
   break_if.
   - inversion e; subst.
     remember (model.dest {| model.dest := primary;
-                            model.payload := payload |}).
-    destruct n. 
+                            model.payload := payload |}) as p.
+    destruct p.
     apply eqset_refl.
     destruct payload.
-    inversion Heqn.
+    inversion Heqp.
     apply eqset_refl.
   - destruct dest, payload; simpl;
     try apply eqset_add; try apply IHl.
