@@ -30,3 +30,10 @@ converted by the helper functions (especially ``nat``, which should be
 non-trivially converted to ``Int``). The incoming data are forwarded to handler
 ``processInput`` and ``processMsg`` so the generated Haskell code takes main
 control of the program logic.
+
+Files
+-----
+- set_replication.v -- the Coq source code
+- SetReplicationCore.hs -- the extracted Haskell code
+- demo/app/Main.hs -- the Haskell main program
+- report/report.pdf -- the report
